@@ -2,6 +2,9 @@
   "name": "pic_match",
   "version": "0.1.0",
   "type": "module",
+  "repository": {
+      "url": "https://github.com/xushengfeng/pic_match"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
