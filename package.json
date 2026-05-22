@@ -17,7 +17,7 @@
         "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
         "embed:wasm": "tsx scripts/embed-wasm.ts",
         "build:ts": "vite build",
-        "build": "npm build:wasm && npm embed:wasm && npm build:ts",
+        "build": "npm run build:wasm && npm run embed:wasm && npm run build:ts",
         "test": "vitest run",
         "test:watch": "vitest"
     },
