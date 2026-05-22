@@ -2,6 +2,12 @@
 
 基于 WASM 的图像偏移检测库，使用相位相关（Phase Correlation）算法，支持部分重叠场景。
 
+## 安装
+
+```bash
+npm install picture_match
+```
+
 ## API
 
 ```typescript
