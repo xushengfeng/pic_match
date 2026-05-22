@@ -12,14 +12,16 @@
   },
   "scripts": {
     "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
+    "embed:wasm": "tsx scripts/embed-wasm.ts",
     "build:ts": "vite build",
-    "build": "pnpm build:wasm && pnpm build:ts",
+    "build": "pnpm build:wasm && pnpm embed:wasm && pnpm build:ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
     "pureimage": "^0.4.13",
+    "tsx": "^4.22.3",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
     "vite-plugin-dts": "^4.0.0",

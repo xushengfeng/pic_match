@@ -12,22 +12,25 @@ export interface ImageData {
 
 let wasmModule: any = null;
 
+function base64ToBytes(base64: string): Uint8Array {
+  if (typeof Buffer !== 'undefined') {
+    return new Uint8Array(Buffer.from(base64, 'base64'));
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 async function loadWasm() {
   if (wasmModule) return wasmModule;
 
+  const { WASM_BINARY } = await import('./wasm-binary');
   const mod = await import('../pkg/pic_match.js');
-
-  if (typeof process !== 'undefined' && process.versions?.node) {
-    const { readFileSync } = await import('fs');
-    const { resolve, dirname } = await import('path');
-    const { fileURLToPath } = await import('url');
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const wasmPath = resolve(__dirname, '../pkg/pic_match_bg.wasm');
-    const wasmBytes = readFileSync(wasmPath);
-    mod.initSync({ module: wasmBytes });
-  } else {
-    await mod.default();
-  }
+  const wasmBytes = base64ToBytes(WASM_BINARY);
+  mod.initSync({ module: wasmBytes });
 
   wasmModule = mod;
   return mod;
