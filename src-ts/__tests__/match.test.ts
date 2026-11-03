@@ -1,146 +1,102 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { findOffset, resetCache, ImageData } from '../index';
-import * as PImage from 'pureimage';
+import { findOffset, resetCache } from '../index';
+import { makeScene, crop, flat } from './helpers';
 
-function createTestImage(
-  width: number,
-  height: number,
-  draw: (ctx: any) => void
-): ImageData {
-  const img = PImage.make(width, height);
-  const ctx = img.getContext('2d');
-  draw(ctx);
-  const buf = img.data;
-  const data = new Uint8ClampedArray(buf.buffer);
-  return { data, width, height };
-}
-
-describe('pic_match', () => {
+describe('pic_match 基础匹配', () => {
   beforeAll(() => {
     resetCache();
   });
 
-  it('should return zero offset for identical images', async () => {
-    const img = createTestImage(64, 64, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(10, 10, 20, 20);
-    });
-
-    const result = await findOffset(img, img);
-    expect(Math.abs(result.dx)).toBeLessThan(2);
-    expect(Math.abs(result.dy)).toBeLessThan(2);
+  it('相同图像返回零偏移，置信度为 1', async () => {
+    const img = makeScene(96, 96, 7);
+    const r = await findOffset(img, img);
+    expect(Math.abs(r.dx)).toBeLessThan(0.5);
+    expect(Math.abs(r.dy)).toBeLessThan(0.5);
+    expect(r.confidence).toBeGreaterThan(0.99);
+    expect(r.overlap).toBeCloseTo(1, 6);
   });
 
-  it('should detect horizontal offset', async () => {
-    const width = 64;
-    const height = 64;
-
-    const imgA = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(10, 10, 20, 20);
-      ctx.fillRect(30, 30, 10, 10);
-    });
-
-    const shiftX = 8;
-    const imgB = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(10 + shiftX, 10, 20, 20);
-      ctx.fillRect(30 + shiftX, 30, 10, 10);
-    });
-
-    const result = await findOffset(imgA, imgB);
-    expect(Math.abs(result.dx - shiftX)).toBeLessThan(3);
-    expect(Math.abs(result.dy)).toBeLessThan(3);
+  it('检测水平偏移', async () => {
+    const scene = makeScene(160, 160, 11);
+    const a = crop(scene, 0, 0, 128, 128);
+    const b = crop(scene, 8, 0, 128, 128);
+    const r = await findOffset(a, b);
+    expect(Math.abs(r.dx + 8)).toBeLessThan(1.5);
+    expect(Math.abs(r.dy)).toBeLessThan(1.5);
+    expect(r.confidence).toBeGreaterThan(0.9);
   });
 
-  it('should detect vertical offset', async () => {
-    const width = 64;
-    const height = 64;
-
-    const imgA = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(10, 10, 20, 20);
-    });
-
-    const shiftY = 12;
-    const imgB = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(10, 10 + shiftY, 20, 20);
-    });
-
-    const result = await findOffset(imgA, imgB);
-    expect(Math.abs(result.dx)).toBeLessThan(3);
-    expect(Math.abs(result.dy - shiftY)).toBeLessThan(3);
+  it('检测垂直偏移', async () => {
+    const scene = makeScene(160, 160, 12);
+    const a = crop(scene, 0, 0, 128, 128);
+    const b = crop(scene, 0, 12, 128, 128);
+    const r = await findOffset(a, b);
+    expect(Math.abs(r.dx)).toBeLessThan(1.5);
+    expect(Math.abs(r.dy + 12)).toBeLessThan(1.5);
+    expect(r.confidence).toBeGreaterThan(0.9);
   });
 
-  it('should detect 2D offset', async () => {
-    const width = 64;
-    const height = 64;
-
-    const imgA = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(10, 10, 15, 15);
-      ctx.fillRect(35, 35, 10, 10);
-    });
-
-    const shiftX = 5;
-    const shiftY = 7;
-    const imgB = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(10 + shiftX, 10 + shiftY, 15, 15);
-      ctx.fillRect(35 + shiftX, 35 + shiftY, 10, 10);
-    });
-
-    const result = await findOffset(imgA, imgB);
-    expect(Math.abs(result.dx - shiftX)).toBeLessThan(3);
-    expect(Math.abs(result.dy - shiftY)).toBeLessThan(3);
+  it('检测二维偏移', async () => {
+    const scene = makeScene(160, 160, 13);
+    const a = crop(scene, 0, 0, 128, 128);
+    const b = crop(scene, 5, 7, 128, 128);
+    const r = await findOffset(a, b);
+    expect(Math.abs(r.dx + 5)).toBeLessThan(1.5);
+    expect(Math.abs(r.dy + 7)).toBeLessThan(1.5);
+    expect(r.confidence).toBeGreaterThan(0.9);
   });
 
-  it('should detect offset with partial overlap', async () => {
-    const width = 100;
-    const height = 100;
-
-    // Image A has a pattern in the center
-    const imgA = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'rgb(200, 50, 50)';
-      ctx.fillRect(20, 20, 30, 30);
-      ctx.fillStyle = 'rgb(50, 200, 50)';
-      ctx.fillRect(50, 50, 20, 20);
-    });
-
-    // Image B is shifted so only part of the content overlaps
-    const shiftX = 15;
-    const shiftY = 10;
-    const imgB = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'rgb(200, 50, 50)';
-      ctx.fillRect(20 + shiftX, 20 + shiftY, 30, 30);
-      ctx.fillStyle = 'rgb(50, 200, 50)';
-      ctx.fillRect(50 + shiftX, 50 + shiftY, 20, 20);
-    });
-
-    const result = await findOffset(imgA, imgB);
-    expect(Math.abs(result.dx - shiftX)).toBeLessThan(4);
-    expect(Math.abs(result.dy - shiftY)).toBeLessThan(4);
+  it('检测负向偏移', async () => {
+    const scene = makeScene(160, 160, 14);
+    const a = crop(scene, 20, 20, 128, 128);
+    const b = crop(scene, 15, 17, 128, 128);
+    const r = await findOffset(a, b);
+    expect(Math.abs(r.dx - 5)).toBeLessThan(1.5);
+    expect(Math.abs(r.dy - 3)).toBeLessThan(1.5);
+    expect(r.confidence).toBeGreaterThan(0.9);
   });
 
-  it('should detect negative offset', async () => {
-    const width = 64;
-    const height = 64;
+  it('支持不同画布尺寸（大图 vs 局部裁剪）', async () => {
+    const scene = makeScene(520, 420, 15);
+    const a = crop(scene, 0, 0, 400, 400);
+    const b = crop(scene, 60, 40, 200, 200);
+    const r = await findOffset(a, b);
+    expect(Math.abs(r.dx + 60)).toBeLessThan(1.5);
+    expect(Math.abs(r.dy + 40)).toBeLessThan(1.5);
+    expect(r.confidence).toBeGreaterThan(0.9);
+  });
 
-    const imgA = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(20, 20, 20, 20);
-    });
+  it('支持不同长宽比', async () => {
+    const scene = makeScene(900, 600, 16);
+    const a = crop(scene, 0, 0, 800, 400);
+    const b = crop(scene, 100, 50, 300, 200);
+    const r = await findOffset(a, b);
+    expect(Math.abs(r.dx + 100)).toBeLessThan(1.5);
+    expect(Math.abs(r.dy + 50)).toBeLessThan(1.5);
+    expect(r.confidence).toBeGreaterThan(0.9);
+  });
 
-    const shiftX = -5;
-    const shiftY = -3;
-    const imgB = createTestImage(width, height, (ctx) => {
-      ctx.fillStyle = 'white';
-      ctx.fillRect(20 + shiftX, 20 + shiftY, 20, 20);
-    });
+  it('大图找小图时，偏移可以超出半张画布', async () => {
+    // 旧实现把可表示的偏移限制在 ±next_pow2(wa+wb)/2 ≈ 256，这里真值是 -300
+    const scene = makeScene(720, 720, 17);
+    const a = crop(scene, 0, 0, 400, 400);
+    const b = crop(scene, 300, 300, 100, 100);
+    const r = await findOffset(a, b);
+    expect(Math.abs(r.dx + 300)).toBeLessThan(2.5);
+    expect(Math.abs(r.dy + 300)).toBeLessThan(2.5);
+    expect(r.confidence).toBeGreaterThan(0.9);
+    expect(r.overlap).toBeCloseTo(1, 6);
+  });
 
-    const result = await findOffset(imgA, imgB);
-    expect(Math.abs(result.dx - shiftX)).toBeLessThan(3);
-    expect(Math.abs(result.dy - shiftY)).toBeLessThan(3);
+  it('无关图像给出低置信度', async () => {
+    const a = crop(makeScene(800, 800, 18), 0, 0, 400, 400);
+    const b = crop(makeScene(800, 800, 19), 0, 0, 400, 400);
+    const r = await findOffset(a, b);
+    expect(r.confidence).toBeLessThan(0.3);
+  });
+
+  it('纯色图像没有可匹配的内容', async () => {
+    const r = await findOffset(flat(200, 200), flat(200, 200));
+    expect(r.confidence).toBe(0);
   });
 });

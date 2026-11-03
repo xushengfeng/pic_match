@@ -1,7 +1,19 @@
 export interface MatchResult {
+	/** X 方向偏移量（正数表示 imageB 相对于 imageA 右移） */
 	dx: number;
+	/** Y 方向偏移量（正数表示 imageB 相对于 imageA 下移） */
 	dy: number;
+	/**
+	 * 匹配程度：两张图重叠区域的归一化互相关（NCC），取值 -1 ~ 1。
+	 * 1 表示重叠区完全一致；一般 ≥0.8 可信，<0.4 基本不可信（例如尺度不同、内容无关）。
+	 */
 	confidence: number;
+	/** 重叠面积占较小一张图的比例，取值 0 ~ 1。 */
+	overlap: number;
+	/** 互功率谱的峰值高度，调试用。 */
+	peak: number;
+	/** 峰值旁瓣比（PSR），调试用。 */
+	psr: number;
 }
 
 export interface ImageData {
