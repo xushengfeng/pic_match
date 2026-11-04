@@ -16,6 +16,14 @@ const TAPER: f64 = 0.1;
 const PSR_EXCLUDE: isize = 5;
 /// PSR 上限：完全重合时旁瓣方差为 0，用它表示"完美匹配"。
 const PSR_MAX: f64 = 100.0;
+/// 复核候选偏移时，判断局部是否一致的块边长（工作分辨率像素）。
+const SUPPORT_BLOCK: usize = 8;
+/// 一个块至少要有这么高的 NCC 才算作该偏移的支撑区域。
+const SUPPORT_NCC: f64 = 0.6;
+/// 非零偏移至少要有这么大比例的支撑面积，才认为画面里确实有物体在动。
+const MIN_SUPPORT_FRACTION: f64 = 0.002;
+/// 支撑面积的绝对下限，避免极小图上的偶然相关。
+const MIN_SUPPORT_CELLS: f64 = 64.0;
 
 fn next_power_of_2(n: usize) -> usize {
     if n == 0 {
@@ -100,6 +108,30 @@ fn tukey(n: usize, alpha: f64) -> Vec<f64> {
         }
     }
     win
+}
+
+/// 3×3 拉普拉斯高通。平滑区域在小偏移下看起来仍然相似，
+/// 用高通后的数据判断"局部一致"，才能把真正对齐的内容和平滑背景的假相关区分开。
+fn high_pass(gray: &[f64], w: usize, h: usize) -> Vec<f64> {
+    let mut out = vec![0.0f64; w * h];
+    if w < 3 || h < 3 {
+        return out;
+    }
+    for y in 0..h {
+        let up = y.saturating_sub(1);
+        let down = (y + 1).min(h - 1);
+        for x in 0..w {
+            let left = x.saturating_sub(1);
+            let right = (x + 1).min(w - 1);
+            let c = gray[y * w + x];
+            out[y * w + x] = 4.0 * c
+                - gray[y * w + left]
+                - gray[y * w + right]
+                - gray[up * w + x]
+                - gray[down * w + x];
+        }
+    }
+    out
 }
 
 /// 去均值 + 加窗，降低直流分量和边界不连续带来的泄漏。
@@ -219,6 +251,18 @@ fn correlate(a: Frame, b: Frame) -> Correlation {
 
     let a_win = prepare(a.data, wa, ha, TAPER);
     let b_win = prepare(b.data, wb, hb, TAPER);
+    let sharp_a_data = high_pass(a.data, wa, ha);
+    let sharp_b_data = high_pass(b.data, wb, hb);
+    let sharp_a = Frame {
+        data: &sharp_a_data,
+        w: wa,
+        h: ha,
+    };
+    let sharp_b = Frame {
+        data: &sharp_b_data,
+        w: wb,
+        h: hb,
+    };
 
     let mut fa = vec![Complex::new(0.0, 0.0); n];
     let mut fb = vec![Complex::new(0.0, 0.0); n];
@@ -348,23 +392,72 @@ fn correlate(a: Frame, b: Frame) -> Correlation {
         });
     }
 
-    let mut chosen = candidates[0].clone();
-    let mut chosen_score = f64::NEG_INFINITY;
-    let mut chosen_ncc = 0.0f64;
-    let mut chosen_overlap = 0.0f64;
+    // 画面里既有不动的部分、又有平移的物体时，相位相关通常在零偏移处给出
+    // 最强的峰。这里用"局部一致面积"区分两者：不动的部分支撑零偏移，
+    // 平移的物体支撑它自己的偏移；只要存在足够大的非零偏移，就优先选它，
+    // 有多个时选支撑面积（涉及范围）更大的那个。
+    let smaller_area = (a.w * a.h).min(b.w * b.h) as f64;
+    let min_support = MIN_SUPPORT_CELLS.max(smaller_area * MIN_SUPPORT_FRACTION);
+
+    #[derive(Clone)]
+    struct Verified {
+        candidate: Candidate,
+        ncc: f64,
+        overlap: f64,
+        score: f64,
+        support: f64,
+        is_static: bool,
+    }
+    let mut fallback: Option<Verified> = None;
+    let mut best_static: Option<Verified> = None;
+    let mut best_moving: Option<Verified> = None;
+
     for c in candidates.iter() {
         let dx = lag_x(c.i);
         let dy = lag_y(c.j);
-        let (ncc, overlap) = verify_overlap(a, b, dx, dy);
+        let v = verify_overlap(a, b, sharp_a, sharp_b, dx, dy);
         // 重叠越少，NCC 越容易偶然偏高，排序时按重叠量轻微打折
-        let score = ncc * (overlap / 0.05).min(1.0).sqrt();
-        if score > chosen_score {
-            chosen_score = score;
-            chosen = c.clone();
-            chosen_ncc = ncc;
-            chosen_overlap = overlap;
+        let score = v.ncc * (v.overlap / 0.05).min(1.0).sqrt();
+        let item = Verified {
+            candidate: c.clone(),
+            ncc: v.ncc,
+            overlap: v.overlap,
+            score,
+            support: v.support,
+            is_static: dx == 0 && dy == 0,
+        };
+
+        if fallback.as_ref().is_none_or(|b| item.score > b.score) {
+            fallback = Some(item.clone());
+        }
+        if item.is_static {
+            if best_static.as_ref().is_none_or(|b| item.score > b.score) {
+                best_static = Some(item.clone());
+            }
+        } else if item.support >= min_support
+            && best_moving
+                .as_ref()
+                .is_none_or(|b| item.support > b.support)
+        {
+            best_moving = Some(item);
         }
     }
+
+    // 不动的部分已经解释了几乎整张小图时，不存在另一块"在动"的内容；
+    // 此时非零候选只是噪声。要求静止解释留下足够的未覆盖面积，才改选偏移。
+    let static_leaves_room = best_static
+        .as_ref()
+        .map_or(true, |s| smaller_area - s.support >= min_support);
+    let chosen = if static_leaves_room {
+        best_moving.or(best_static)
+    } else {
+        best_static.or(best_moving)
+    }
+    .or(fallback)
+    .expect("candidates 至少有一个");
+    let chosen_ncc = chosen.ncc;
+    let chosen_overlap = chosen.overlap;
+    let chosen = chosen.candidate;
 
     let px = chosen.i as isize;
     let py = chosen.j as isize;
@@ -396,8 +489,8 @@ fn collect_candidates(
     best: f64,
 ) -> Vec<Candidate> {
     const MIN_SEPARATION: isize = 8;
-    const MAX_CANDIDATES: usize = 5;
-    let floor = best * 0.5;
+    const MAX_CANDIDATES: usize = 12;
+    let floor = best * 0.2;
 
     let mut raw: Vec<Candidate> = Vec::new();
     for j in 0..pad_h {
@@ -436,9 +529,42 @@ fn collect_candidates(
     out
 }
 
-/// 在给定偏移下比较两张图的公共区域，返回 (NCC, 重叠面积占比)。
-/// NCC ∈ [-1, 1]，只有像素真的对齐时才接近 1。
-fn verify_overlap(a: Frame, b: Frame, dx: isize, dy: isize) -> (f64, f64) {
+/// 给定偏移下的重叠区复核结果。
+struct Verification {
+    /// 整个重叠区的归一化互相关。
+    ncc: f64,
+    /// 重叠面积占较小图的比例。
+    overlap: f64,
+    /// 局部一致（块 NCC 达标）的面积，单位是工作分辨率像素。
+    support: f64,
+}
+
+/// 计算一组像素的 NCC；方差太小（纯色块）时返回 0。
+fn block_ncc(sa: f64, sb: f64, saa: f64, sbb: f64, sab: f64, n: f64) -> f64 {
+    let cov = n * sab - sa * sb;
+    let va = n * saa - sa * sa;
+    let vb = n * sbb - sb * sb;
+    let va_floor = 1e-6 * (sa * sa).max(1.0);
+    let vb_floor = 1e-6 * (sb * sb).max(1.0);
+    if va > va_floor && vb > vb_floor {
+        (cov / (va * vb).sqrt()).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// 在给定偏移下比较两张图的公共区域。
+/// 除了整体 NCC，还按小块统计"局部一致"的面积：
+/// 画面里几个物体各自平移时，每个偏移只在自己那块区域里得到支撑，
+/// 因此用支撑面积可以比较不同偏移各涉及多大范围。
+fn verify_overlap(
+    a: Frame,
+    b: Frame,
+    sharp_a: Frame,
+    sharp_b: Frame,
+    dx: isize,
+    dy: isize,
+) -> Verification {
     let (wa, ha, wb, hb) = (a.w, a.h, b.w, b.h);
     // 相位相关的约定：a[x] 对应 b[x + dx]
     let x0 = (-dx).max(0).min(wa as isize) as usize;
@@ -450,7 +576,11 @@ fn verify_overlap(a: Frame, b: Frame, dx: isize, dy: isize) -> (f64, f64) {
     let smaller = area_a.min(area_b);
 
     if x1 <= x0 || y1 <= y0 {
-        return (0.0, 0.0);
+        return Verification {
+            ncc: 0.0,
+            overlap: 0.0,
+            support: 0.0,
+        };
     }
     let ow = x1 - x0;
     let oh = y1 - y0;
@@ -458,7 +588,11 @@ fn verify_overlap(a: Frame, b: Frame, dx: isize, dy: isize) -> (f64, f64) {
 
     // 重叠太小时 NCC 不可靠
     if cells < (smaller * 0.01).max(64.0) {
-        return (0.0, cells / smaller);
+        return Verification {
+            ncc: 0.0,
+            overlap: cells / smaller,
+            support: 0.0,
+        };
     }
 
     let mut sa = 0.0f64;
@@ -466,36 +600,63 @@ fn verify_overlap(a: Frame, b: Frame, dx: isize, dy: isize) -> (f64, f64) {
     let mut saa = 0.0f64;
     let mut sbb = 0.0f64;
     let mut sab = 0.0f64;
-    for y in y0..y1 {
-        let by = (y as isize + dy) as usize;
-        let arow = y * wa;
-        let brow = by * wb;
-        for x in x0..x1 {
-            let bx = (x as isize + dx) as usize;
-            let va = a.data[arow + x];
-            let vb = b.data[brow + bx];
-            sa += va;
-            sb += vb;
-            saa += va * va;
-            sbb += vb * vb;
-            sab += va * vb;
+    let mut support = 0.0f64;
+
+    let mut by0 = 0usize;
+    while by0 < oh {
+        let bh = (oh - by0).min(SUPPORT_BLOCK);
+        let mut bx0 = 0usize;
+        while bx0 < ow {
+            let bw = (ow - bx0).min(SUPPORT_BLOCK);
+            let (mut bsa, mut bsb) = (0.0f64, 0.0f64);
+            let (mut bsaa, mut bsbb, mut bsab) = (0.0f64, 0.0f64, 0.0f64);
+            let (mut hsa, mut hsb) = (0.0f64, 0.0f64);
+            let (mut hsaa, mut hsbb, mut hsab) = (0.0f64, 0.0f64, 0.0f64);
+            for oy in by0..by0 + bh {
+                let y = y0 + oy;
+                let by = (y as isize + dy) as usize;
+                let arow = y * wa;
+                let brow = by * wb;
+                for ox in bx0..bx0 + bw {
+                    let x = x0 + ox;
+                    let bx = (x as isize + dx) as usize;
+                    let va = a.data[arow + x];
+                    let vb = b.data[brow + bx];
+                    bsa += va;
+                    bsb += vb;
+                    bsaa += va * va;
+                    bsbb += vb * vb;
+                    bsab += va * vb;
+
+                    let ha = sharp_a.data[arow + x];
+                    let hb = sharp_b.data[brow + bx];
+                    hsa += ha;
+                    hsb += hb;
+                    hsaa += ha * ha;
+                    hsbb += hb * hb;
+                    hsab += ha * hb;
+                }
+            }
+            sa += bsa;
+            sb += bsb;
+            saa += bsaa;
+            sbb += bsbb;
+            sab += bsab;
+            let bn = (bw * bh) as f64;
+            if block_ncc(hsa, hsb, hsaa, hsbb, hsab, bn) >= SUPPORT_NCC {
+                support += bn;
+            }
+            bx0 += bw;
         }
+        by0 += bh;
     }
-    let n = cells;
-    let cov = n * sab - sa * sb;
-    let va = n * saa - sa * sa;
-    let vb = n * sbb - sb * sb;
 
-    // 任一边几乎无方差（纯色区域）时相似度无意义
-    let va_floor = 1e-6 * (sa * sa).max(1.0);
-    let vb_floor = 1e-6 * (sb * sb).max(1.0);
-    let ncc = if va > va_floor && vb > vb_floor {
-        (cov / (va * vb).sqrt()).clamp(-1.0, 1.0)
-    } else {
-        0.0
-    };
-
-    (ncc, cells / smaller)
+    let ncc = block_ncc(sa, sb, saa, sbb, sab, cells);
+    Verification {
+        ncc,
+        overlap: cells / smaller,
+        support,
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -667,6 +828,56 @@ mod tests {
         let b = gray_image(128, 128, pattern_b);
         let r = match_offset(&a, 128, 128, &b, 128, 128);
         assert!(r.confidence < 0.5, "ncc={}", r.confidence);
+    }
+
+    fn paste_object(
+        dst: &mut [u8],
+        w: usize,
+        x: usize,
+        y: usize,
+        size: usize,
+        f: impl Fn(usize, usize) -> f64,
+    ) {
+        for oy in 0..size {
+            for ox in 0..size {
+                let v = f(ox, oy).clamp(0.0, 255.0) as u8;
+                let i = ((y + oy) * w + x + ox) * 4;
+                dst[i] = v;
+                dst[i + 1] = v;
+                dst[i + 2] = v;
+            }
+        }
+    }
+
+    #[test]
+    fn moving_object_overrides_static_background() {
+        let (w, h) = (256, 256);
+        let mut a = gray_image(w, h, pattern);
+        let mut b = gray_image(w, h, pattern);
+        // 背景完全相同，只有物体从 (80,80) 移到 (98,92)
+        paste_object(&mut a, w, 80, 80, 64, pattern_b);
+        paste_object(&mut b, w, 98, 92, 64, pattern_b);
+
+        let r = match_offset(&a, w, h, &b, w, h);
+        assert!((r.dx - 18.0).abs() <= 1.5, "dx={}", r.dx);
+        assert!((r.dy - 12.0).abs() <= 1.5, "dy={}", r.dy);
+        assert!(r.confidence > 0.2, "ncc={}", r.confidence);
+    }
+
+    #[test]
+    fn larger_moving_object_wins() {
+        let (w, h) = (320, 320);
+        let mut a = gray_image(w, h, pattern);
+        let mut b = gray_image(w, h, pattern);
+        // 小物体向右下移动，大物体向左上移动
+        paste_object(&mut a, w, 40, 40, 40, pattern_b);
+        paste_object(&mut b, w, 60, 54, 40, pattern_b);
+        paste_object(&mut a, w, 180, 180, 88, |x, y| pattern_b(x + 300, y + 200));
+        paste_object(&mut b, w, 164, 158, 88, |x, y| pattern_b(x + 300, y + 200));
+
+        let r = match_offset(&a, w, h, &b, w, h);
+        assert!((r.dx + 16.0).abs() <= 1.5, "dx={}", r.dx);
+        assert!((r.dy + 22.0).abs() <= 1.5, "dy={}", r.dy);
     }
 
     #[test]

@@ -128,6 +128,21 @@ export function occlude(
   return { data, width: img.width, height: img.height };
 }
 
+/** 把 src 覆盖到 dst 的 (x, y) 处，返回新的图像 */
+export function paste(dst: ImageData, src: ImageData, x: number, y: number): ImageData {
+  const data = new Uint8ClampedArray(dst.data);
+  for (let row = 0; row < src.height; row++) {
+    const py = y + row;
+    if (py < 0 || py >= dst.height) continue;
+    const cols = Math.max(0, Math.min(src.width, dst.width - x));
+    if (cols <= 0) continue;
+    const from = (row * src.width) * 4;
+    const to = (py * dst.width + x) * 4;
+    data.set(src.data.subarray(from, from + cols * 4), to);
+  }
+  return { data, width: dst.width, height: dst.height };
+}
+
 /** 一片纯色图 */
 export function flat(width: number, height: number, value = 128): ImageData {
   const data = new Uint8ClampedArray(width * height * 4).fill(value);
