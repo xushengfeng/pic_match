@@ -1,37 +1,37 @@
 {
-    "name": "picture_match",
-    "version": "0.1.4",
-    "type": "module",
-    "repository": {
-        "url": "https://github.com/xushengfeng/pic_match"
-    },
-    "main": "./dist/index.js",
-    "types": "./dist/index.d.ts",
-    "exports": {
-        ".": {
-            "types": "./dist/index.d.ts",
-            "import": "./dist/index.js"
-        }
-    },
-    "scripts": {
-        "build:wasm": "wasm-pack build --target web --out-dir pkg --release",
-        "build:ts": "vite build",
-        "build": "npm run build:wasm && npm run build:ts",
-        "test": "vitest run",
-        "test:watch": "vitest"
-    },
-    "files": [
-        "dist",
-        "README.md",
-        "LICENSE"
-    ],
-    "devDependencies": {
-        "@types/node": "^25.9.1",
-        "pureimage": "^0.4.13",
-        "tsx": "^4.22.3",
-        "typescript": "^5.7.0",
-        "vite": "^8.1.0",
-        "vite-plugin-dts": "^4.0.0",
-        "vitest": "^3.0.0"
-    }
+	"name": "picture_match",
+	"version": "0.2.0",
+	"type": "module",
+	"repository": {
+		"url": "https://github.com/xushengfeng/pic_match"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"build:wasm": "wasm-pack build --target web --out-dir pkg --release",
+		"build:ts": "vite build",
+		"build": "npm run build:wasm && npm run build:ts",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"devDependencies": {
+		"@types/node": "^25.9.1",
+		"pureimage": "^0.4.13",
+		"tsx": "^4.22.3",
+		"typescript": "^5.7.0",
+		"vite": "^8.1.0",
+		"vite-plugin-dts": "^4.0.0",
+		"vitest": "^3.0.0"
+	}
 }
