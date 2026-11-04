@@ -1,7 +1,7 @@
 export interface MatchResult {
-	/** X 方向偏移量（正数表示 imageB 相对于 imageA 右移） */
+	/** X 方向偏移量（正数表示 imageB 相对于 imageA 右移） 精度为小数，提供亚像素偏移 */
 	dx: number;
-	/** Y 方向偏移量（正数表示 imageB 相对于 imageA 下移） */
+	/** Y 方向偏移量（正数表示 imageB 相对于 imageA 下移） 精度为小数，提供亚像素偏移 */
 	dy: number;
 	/**
 	 * 匹配程度：两张图重叠区域的归一化互相关（NCC），取值 -1 ~ 1。
